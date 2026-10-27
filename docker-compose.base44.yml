@@ -1,0 +1,51 @@
+# Base44 sandbox runbook for Web Dashers.
+#
+# Web Dashers is a client-side static site: index.html + assets/ (Phaser, levels,
+# sprites, music). There is no build step and no package dependencies, so the app
+# is served straight from the bind-mounted clone and every edit to a file on disk
+# is visible on the next page load.
+#
+# Not in this compose file on purpose:
+#   * The account/cloud-save API (/api/auth/*, /api/saves) is a separate service
+#     whose source is not part of this repository (git-ignored /server.js, see
+#     db/schema.sql). On any host other than localhost/127.0.0.1 the client talks
+#     to https://webdasher-backend.itzar.dev instead (assets/scripts/utils/api-config.js).
+#   * No credentials are required to boot; all other outbound traffic (GD proxy
+#     workers, boomlings.com, gdbrowser.com) is public and unauthenticated.
+
+services:
+  web:
+    # Plain runtime base image on purpose: the app is served from the cloned
+    # source, never from a prebuilt image, so edits stay visible.
+    image: python:3.12-slim
+    working_dir: /app
+    # Python's http.server CLI uses ThreadingHTTPServer (3.7+), which is enough
+    # for this site's parallel asset requests. Serves files from disk per request.
+    command:
+      ["python3", "-m", "http.server", "3000", "--bind", "0.0.0.0", "--directory", "/app"]
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./:/app
+    labels:
+      base44.project: "Web Dashers"
+      base44.kind: "web"
+      base44.port: "3000"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              r = urllib.request.urlopen("http://127.0.0.1:3000/index.html", timeout=3)
+              sys.exit(0 if r.status == 200 and b"<title>Web Dashers</title>" in r.read() else 1)
+          except Exception as e:
+              print("web check failed:", e)
+              sys.exit(1)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: on-failure
