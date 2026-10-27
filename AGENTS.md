@@ -38,6 +38,13 @@ cannot be called from a Base44 or preview origin).
 No credentials are required to boot. Outbound traffic goes to public services: GD
 proxies on `*.workers.dev`, `boomlings.com`, `gdbrowser.com`.
 
+The dev server serves efficiently in both modes, and never changes what is served
+(same files, same bytes): HTTP/1.1 keep-alive, because a boot load pulls ~200 files
+and a server that closes after each response makes the platform proxy pay a
+connection setup per file, and gzip on the text assets (the game scripts are several
+MB; already-compressed PNG/MP3 are left alone). Revalidation still answers `304`, so
+a second load only re-fetches what changed.
+
 ## Things that are easy to get wrong
 
 - **Everything is one canvas.** The loading screen, main menu, level select and
@@ -58,10 +65,12 @@ proxies on `*.workers.dev`, `boomlings.com`, `gdbrowser.com`.
   `_totalJumps`, `_lastPercent`, `_attempts`, `_state.isDead`.
 - Tapping a level card on the main level list starts the level directly; there is no
   intermediate level page for main levels (`_playOverlay` is only for online levels).
-- **The first load takes roughly 25 seconds** in the sandbox: the boot load pulls
-  ~16 MB of texture atlases and decodes music before the menu appears. Later loads
-  reuse the game's own cache (`webdash_assets_loaded` in localStorage plus
-  CacheStorage) and are still CPU-bound. A slow first paint is not a broken preview.
+- **The first load is slow, and that is not the same as broken.** An uncached browser
+  pulls ~200 files (tens of MB of texture atlases and music) through the preview
+  proxy before the menu appears; measured in the sandbox preview browser that is
+  roughly 10-15 s of transfer plus decode. Later loads revalidate (`304`) and reach
+  the menu in a few seconds. The loading screen sits on a partly-filled bar for that
+  whole time - wait for it rather than reloading.
 - The game shows its own "update log" popup over the main menu on every fresh page
   load, and it covers the menu buttons — close it before clicking anything.
 - `assets/scripts/core/loading-screen.js` begins with an obfuscated anti-clone guard

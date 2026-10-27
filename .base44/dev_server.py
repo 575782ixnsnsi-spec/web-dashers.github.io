@@ -21,8 +21,16 @@ BASE44_PREVIEW_MODE is exactly "1":
 
 With BASE44_PREVIEW_MODE unset (or any other value) this is a plain, unmodified
 static file server and the app keeps talking to the hosted backend.
+
+The server always serves efficiently, in both modes: HTTP/1.1 keep-alive (a boot
+load pulls ~200 files, and the platform proxy pays a connection setup per request
+when the server closes after every response) and gzip for the uncompressed text
+assets (the game scripts alone are several MB). Neither changes what is served —
+same files, same bytes.
 """
 
+import gzip
+import io
 import json
 import os
 import sys
@@ -43,8 +51,56 @@ def read_index_html():
 
 
 class DevHandler(SimpleHTTPRequestHandler):
+    # HTTP/1.1 keeps the connection open between the ~200 files a boot load pulls.
+    # Every response here sets Content-Length, so keep-alive stays in sync.
+    protocol_version = "HTTP/1.1"
+    # Text assets worth compressing; the PNG/MP3 media is already compressed.
+    GZIP_EXTENSIONS = (".html", ".js", ".css", ".json", ".fnt", ".txt", ".svg", ".xml")
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
+
+    def _drain_body(self):
+        """Consume the request body so keep-alive does not read it as a new request."""
+        if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > 0:
+            self.rfile.read(length)
+
+    def send_head(self):
+        """Serve compressible text assets gzipped (same bytes, fewer of them).
+
+        Requests carrying If-Modified-Since fall through to the base class so an
+        unchanged file still answers 304 and is never re-downloaded.
+        """
+        path = self.translate_path(self.path)
+        if (
+            path.lower().endswith(self.GZIP_EXTENSIONS)
+            and os.path.isfile(path)
+            and "gzip" in self.headers.get("Accept-Encoding", "")
+            and not self.headers.get("If-Modified-Since")
+        ):
+            try:
+                with open(path, "rb") as handle:
+                    raw = handle.read()
+            except OSError:
+                return super().send_head()
+            body = gzip.compress(raw, 6)
+            if len(raw) >= 1024 and len(body) < len(raw):
+                self.send_response(200)
+                self.send_header("Content-Type", self.guess_type(path))
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Last-Modified", self.date_time_string(os.stat(path).st_mtime))
+                self.send_header("Vary", "Accept-Encoding")
+                self.end_headers()
+                return io.BytesIO(body)
+        return super().send_head()
 
     def _send_json(self, status, payload):
         body = json.dumps(payload).encode("utf-8")
@@ -58,6 +114,7 @@ class DevHandler(SimpleHTTPRequestHandler):
 
     def _api_stub(self, route):
         """Development answers for the account API — no accounts live here."""
+        self._drain_body()
         if route == "/api/auth/me":
             self._send_json(200, {"user": None})
         elif route == "/api/auth/logout":
@@ -108,6 +165,7 @@ class DevHandler(SimpleHTTPRequestHandler):
             route = self.path.split("?")[0]
             if route.startswith(API_PREFIX):
                 return self._api_stub(route.rstrip("/"))
+        self._drain_body()
         self.send_error(501, "Unsupported method ('POST')")
 
 
