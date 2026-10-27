@@ -27,6 +27,12 @@ load pulls ~200 files, and the platform proxy pays a connection setup per reques
 when the server closes after every response) and gzip for the uncompressed text
 assets (the game scripts alone are several MB). Neither changes what is served —
 same files, same bytes.
+
+It also tells browsers how to cache. A boot load is ~27 MB of media across ~170
+separate files, and none of it is worth re-fetching on the next preview load, so
+media is reusable (`max-age` plus `stale-while-revalidate`, which serves the cached
+copy at once and refreshes it in the background after that). Scripts, markup and
+styles stay on `no-cache`, so an edit is still what the browser asks for next.
 """
 
 import gzip
@@ -56,9 +62,35 @@ class DevHandler(SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     # Text assets worth compressing; the PNG/MP3 media is already compressed.
     GZIP_EXTENSIONS = (".html", ".js", ".css", ".json", ".fnt", ".txt", ".svg", ".xml")
+    MEDIA_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".mp3", ".ogg", ".wav", ".m4a")
+    # Media is content-stable and makes up nearly the whole boot load, so let the
+    # browser keep it and refresh it in the background instead of re-fetching it
+    # (at ~90 ms per round through the preview proxy, ~170 files is the slow part).
+    MEDIA_CACHE = "public, max-age=300, stale-while-revalidate=86400"
+    # Everything a developer edits: always revalidate, so the next load shows it.
+    TEXT_CACHE = "no-cache"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
+        self._cache_control = None
+        self._cache_sent = False
+
+    def _start_request(self, route):
+        """Pick the Cache-Control policy for this request, once per request."""
+        self._cache_sent = False
+        if route.startswith(API_PREFIX) or route in ("/", "/index.html"):
+            # The stub and the page itself set their own Cache-Control.
+            self._cache_control = None
+        elif route.lower().endswith(self.MEDIA_EXTENSIONS):
+            self._cache_control = self.MEDIA_CACHE
+        else:
+            self._cache_control = self.TEXT_CACHE
+
+    def end_headers(self):
+        if self._cache_control and not self._cache_sent:
+            self._cache_sent = True
+            super().send_header("Cache-Control", self._cache_control)
+        super().end_headers()
 
     def _drain_body(self):
         """Consume the request body so keep-alive does not read it as a new request."""
@@ -147,8 +179,9 @@ class DevHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        route = self.path.split("?")[0]
+        self._start_request(route)
         if PREVIEW_MODE:
-            route = self.path.split("?")[0]
             if route.startswith(API_PREFIX):
                 return self._api_stub(route.rstrip("/"))
             if route in ("/", "/index.html"):
@@ -156,15 +189,19 @@ class DevHandler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_HEAD(self):
-        if PREVIEW_MODE and self.path.split("?")[0].startswith(API_PREFIX):
-            return self._api_stub(self.path.split("?")[0].rstrip("/"))
+        route = self.path.split("?")[0]
+        self._start_request(route)
+        if PREVIEW_MODE and route.startswith(API_PREFIX):
+            return self._api_stub(route.rstrip("/"))
         return super().do_HEAD()
 
     def do_POST(self):
-        if PREVIEW_MODE:
-            route = self.path.split("?")[0]
-            if route.startswith(API_PREFIX):
-                return self._api_stub(route.rstrip("/"))
+        # Requests are answered by the stub or rejected; no Cache-Control either way.
+        self._cache_control = None
+        self._cache_sent = False
+        route = self.path.split("?")[0]
+        if PREVIEW_MODE and route.startswith(API_PREFIX):
+            return self._api_stub(route.rstrip("/"))
         self._drain_body()
         self.send_error(501, "Unsupported method ('POST')")
 

@@ -42,8 +42,18 @@ The dev server serves efficiently in both modes, and never changes what is serve
 (same files, same bytes): HTTP/1.1 keep-alive, because a boot load pulls ~200 files
 and a server that closes after each response makes the platform proxy pay a
 connection setup per file, and gzip on the text assets (the game scripts are several
-MB; already-compressed PNG/MP3 are left alone). Revalidation still answers `304`, so
-a second load only re-fetches what changed.
+MB; already-compressed PNG/MP3 are left alone). Revalidation still answers `304`.
+
+It also sets `Cache-Control`, because re-fetching the whole game on every preview
+load is what makes the app feel like it is stuck on its loading screen:
+
+- Media (`.png`/`.jpg`/`.mp3`/`.ogg`/…, ~26 MB of the ~27 MB boot load) is
+  `max-age=300, stale-while-revalidate=86400`: the browser reuses it for five
+  minutes, then serves it from cache instantly while refreshing it in the background.
+  A replaced image therefore shows up on the load after the one that refreshes it.
+- Scripts, markup and styles are `no-cache`: always revalidated, so an edit is the
+  next thing the browser asks for.
+- `index.html` and the account stub stay `no-store`.
 
 ## Things that are easy to get wrong
 
@@ -66,11 +76,13 @@ a second load only re-fetches what changed.
 - Tapping a level card on the main level list starts the level directly; there is no
   intermediate level page for main levels (`_playOverlay` is only for online levels).
 - **The first load is slow, and that is not the same as broken.** An uncached browser
-  pulls ~200 files (tens of MB of texture atlases and music) through the preview
-  proxy before the menu appears; measured in the sandbox preview browser that is
-  roughly 10-15 s of transfer plus decode. Later loads revalidate (`304`) and reach
-  the menu in a few seconds. The loading screen sits on a partly-filled bar for that
-  whole time - wait for it rather than reloading.
+  pulls ~200 files (27 MB of texture atlases, sprites and music) through the preview
+  proxy, one round trip per file, before the menu appears — measured in the sandbox
+  preview browser, roughly 10-15 s of transfer plus decode. Later loads reuse the
+  cached media and reach the menu in a few seconds. The loading screen sits on a
+  partly-filled bar for that whole time - wait for it rather than reloading. Only a
+  first visit can be slow; if every load of the same browser is slow, the caching
+  headers in `.base44/dev_server.py` are not reaching it.
 - The game shows its own "update log" popup over the main menu on every fresh page
   load, and it covers the menu buttons — close it before clicking anything.
 - `assets/scripts/core/loading-screen.js` begins with an obfuscated anti-clone guard
