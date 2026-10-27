@@ -106,3 +106,18 @@ load is what makes the app feel like it is stuck on its loading screen:
    `{"user": null}` in preview mode only.
 
 There is no test suite, linter or CI configuration in this repository.
+
+## Deploying the public site
+
+`firebase.json` + `.firebaserc` configure Firebase Hosting for a public deploy
+(`npx firebase-tools deploy --only hosting`, see [README.md](./README.md)). Two
+things that are easy to get wrong when checking it:
+
+- The Hosting **emulator** does not apply the `ignore` list: it serves every file
+  under `public` (the repo root), including `.git/`, `README.md` and
+  `.base44/dev_server.py`. A real deploy does filter them — the upload list comes
+  from `listFiles(publicDir, config.ignore)` in `firebase-tools/lib/listFiles`, so
+  check that instead of the emulator when validating ignore patterns.
+- The cache policy lives in `firebase.json` `headers` and mirrors
+  `.base44/dev_server.py` (media cached, scripts and level data revalidated, markup
+  `no-store`); the emulator does apply those, and `curl -sI` on it is a quick check.
